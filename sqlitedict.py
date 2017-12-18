@@ -109,7 +109,8 @@ class SqliteDict(DictClass):
     VALID_FLAGS = ['c', 'r', 'w', 'n']
 
     def __init__(self, filename=None, tablename='unnamed', flag='c',
-                 autocommit=False, journal_mode="DELETE", encode=encode, decode=decode):
+                 autocommit=False, journal_mode="DELETE", encode=encode, decode=decode,
+                 store_dates=False):
         """
         Initialize a thread-safe sqlite-backed dictionary. The dictionary will
         be a table `tablename` in database file `filename`. A single file (=database)
@@ -167,11 +168,26 @@ class SqliteDict(DictClass):
         self.journal_mode = journal_mode
         self.encode = encode
         self.decode = decode
+        self.store_dates = store_dates
 
         logger.info("opening Sqlite table %r in %s" % (tablename, filename))
-        MAKE_TABLE = 'CREATE TABLE IF NOT EXISTS "%s" (key TEXT PRIMARY KEY, value BLOB)' % self.tablename
+        fields = 'key TEXT PRIMARY KEY, value BLOB'
+        if self.store_dates:
+            fields += ', "created_at" DATETIME DEFAULT CURRENT_TIMESTAMP' \
+                      ', "updated_at" DATETIME DEFAULT CURRENT_TIMESTAMP'
+        MAKE_TABLE = 'CREATE TABLE IF NOT EXISTS "%s" (%s)' % (self.tablename, fields)
         self.conn = self._new_conn()
         self.conn.execute(MAKE_TABLE)
+        if self.store_dates:
+            self.conn.execute(
+                """CREATE TRIGGER [UpdatedAt%s]
+                    AFTER UPDATE OF value
+                    ON %s
+                    FOR EACH ROW
+                    WHEN NEW.updated_at < OLD.updated_at    --- this avoid infinite loop
+                BEGIN
+                    UPDATE %s SET updated_at=CURRENT_TIMESTAMP WHERE key=OLD.key;
+                END;""" % (self.tablename[0].upper() + self.tablename[1:], self.tablename, self.tablename))
         self.conn.commit()
         if flag == 'w':
             self.clear()
@@ -220,8 +236,11 @@ class SqliteDict(DictClass):
         for value in self.conn.select(GET_VALUES):
             yield self.decode(value[0])
 
-    def iteritems(self):
-        GET_ITEMS = 'SELECT key, value FROM "%s" ORDER BY rowid' % self.tablename
+    def iteritems(self, **kwargs):
+        where = ''
+        if 'where' in kwargs:
+            where = kwargs['where']
+        GET_ITEMS = 'SELECT key, value FROM "%s" %s ORDER BY rowid' % (self.tablename, where)
         for key, value in self.conn.select(GET_ITEMS):
             yield key, self.decode(value)
 
@@ -231,8 +250,8 @@ class SqliteDict(DictClass):
     def values(self):
         return self.itervalues() if major_version > 2 else list(self.itervalues())
 
-    def items(self):
-        return self.iteritems() if major_version > 2 else list(self.iteritems())
+    def items(self, **kwargs):
+        return self.iteritems(**kwargs) if major_version > 2 else list(self.iteritems())
 
     def __contains__(self, key):
         HAS_ITEM = 'SELECT 1 FROM "%s" WHERE key = ?' % self.tablename
