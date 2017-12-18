@@ -180,7 +180,7 @@ class SqliteDict(DictClass):
         self.conn.execute(MAKE_TABLE)
         if self.store_dates:
             self.conn.execute(
-                """CREATE TRIGGER [UpdatedAt%s]
+                """CREATE TRIGGER IF NOT EXISTS [UpdatedAt%s]
                     AFTER UPDATE OF value
                     ON %s
                     FOR EACH ROW
